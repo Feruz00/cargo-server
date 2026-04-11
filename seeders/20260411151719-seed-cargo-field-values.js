@@ -4,25 +4,31 @@ module.exports = {
   async up(queryInterface, Sequelize) {
     const now = new Date();
 
-    // ✅ users
     const users = await queryInterface.sequelize.query(
       `SELECT id FROM tbl_users WHERE role = 'user'`,
       { type: Sequelize.QueryTypes.SELECT }
     );
 
-    // ✅ fields (with type + formula)
     const fields = await queryInterface.sequelize.query(
       `SELECT id, \`key\`, type, isComputed, formula FROM tbl_cargo_fields`,
       { type: Sequelize.QueryTypes.SELECT }
     );
 
-    // map
+    const enumValues = await queryInterface.sequelize.query(
+      `SELECT fieldId, name FROM tbl_cargo_field_enum_values`,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+
+    // 👉 maps
     const fieldById = {};
-    fields.forEach((f) => {
-      fieldById[f.id] = f;
+    fields.forEach((f) => (fieldById[f.id] = f));
+
+    const enumMap = {};
+    enumValues.forEach((e) => {
+      if (!enumMap[e.fieldId]) enumMap[e.fieldId] = [];
+      enumMap[e.fieldId].push(e.name);
     });
 
-    // ✅ permissions
     const permissions = await queryInterface.sequelize.query(
       `SELECT fieldId, userId FROM tbl_cargo_field_permissions`,
       { type: Sequelize.QueryTypes.SELECT }
@@ -36,7 +42,6 @@ module.exports = {
 
     const rows = [];
 
-    // 🎯 helpers
     const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
     const randNum = (min, max) =>
       Math.floor(Math.random() * (max - min + 1)) + min;
@@ -52,16 +57,14 @@ module.exports = {
       }
     };
 
-    // 🚀 generate data
     users.forEach((user) => {
       const allowedFieldIds = userFieldsMap[user.id] || [];
-
-      const totalRows = randNum(50, 100); // 🔥 50–100 rows
+      const totalRows = randNum(50, 100);
 
       for (let rowNum = 1; rowNum <= totalRows; rowNum++) {
         const rowData = {};
 
-        // 👉 FIRST pass: generate base fields
+        // ✅ base values
         allowedFieldIds.forEach((fieldId) => {
           const field = fieldById[fieldId];
           if (!field || field.isComputed) return;
@@ -74,25 +77,19 @@ module.exports = {
               break;
 
             case 'text':
-              if (field.key === 'cargo_type')
-                value = rand(['Electronics', 'Food', 'Clothes']);
-              else if (field.key === 'origin')
-                value = rand(['China', 'USA', 'Germany']);
-              else if (field.key === 'destination')
-                value = rand(['Japan', 'France', 'UAE']);
-              else if (field.key === 'status')
-                value = rand(['Pending', 'In Transit', 'Delivered']);
-              else if (field.key === 'priority')
-                value = rand(['Low', 'Normal', 'High']);
-              else if (field.key === 'tracking_number')
-                value = `TRK-${user.id}-${rowNum}-${Date.now()}`;
+              if (field.key === 'tracking_number')
+                value = `TRK-${user.id}-${rowNum}`;
               else if (field.key === 'client_name')
-                value = `Client ${user.id}-${rowNum}`;
-              else value = 'Sample text';
+                value = `Müşderi ${user.id}-${rowNum}`;
+              else value = 'Test maglumat';
               break;
 
             case 'date':
               value = new Date('2026-04-01');
+              break;
+
+            case 'enum':
+              value = rand(enumMap[fieldId] || []);
               break;
 
             default:
@@ -102,26 +99,25 @@ module.exports = {
           rowData[field.key] = value;
         });
 
-        // 👉 SECOND pass: compute formula fields
+        // ✅ computed
         allowedFieldIds.forEach((fieldId) => {
           const field = fieldById[fieldId];
           if (!field || !field.isComputed) return;
 
-          const computed = evalFormula(field.formula, rowData);
-          rowData[field.key] = computed;
+          rowData[field.key] = evalFormula(field.formula, rowData);
         });
 
-        // 👉 FINAL: save to DB
+        // ✅ save
         allowedFieldIds.forEach((fieldId) => {
           const field = fieldById[fieldId];
           if (!field) return;
 
-          const value =
-            rowData[field.key] !== undefined ? rowData[field.key] : null;
-
           rows.push({
             fieldId,
-            value: value !== null ? String(value) : '',
+            value:
+              rowData[field.key] !== undefined
+                ? String(rowData[field.key])
+                : '',
             rowNum,
             createdUser: user.id,
             updatedUser: user.id,

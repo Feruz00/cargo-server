@@ -37,11 +37,8 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       type: {
-        type: DataTypes.STRING,
+        type: DataTypes.ENUM('text', 'number', 'date', 'enum'),
         allowNull: false,
-        validate: {
-          isIn: [['text', 'number', 'date']],
-        },
       },
 
       isComputed: {
