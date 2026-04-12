@@ -4,6 +4,7 @@ const {
   Users,
   CargoFieldPermission,
   sequelize,
+  CargoFieldEnumValues,
 } = require('../models');
 const AppError = require('../utils/appError');
 const { catchAsync } = require('../utils/catchAsync');
@@ -83,7 +84,15 @@ exports.getAllFields = catchAsync(async (req, res, next) => {
  * GET ONE FIELD
  */
 exports.getOneField = catchAsync(async (req, res, next) => {
-  const field = await CargoFields.findByPk(req.params.id);
+  const field = await CargoFields.findByPk(req.params.id, {
+    include: [
+      {
+        model: CargoFieldEnumValues,
+        as: 'enums',
+        attributes: ['id', 'name', 'color'],
+      },
+    ],
+  });
 
   if (!field) return next(new AppError('Field not found', 404));
   const permissions = await CargoFieldPermission.findAll({
@@ -113,9 +122,16 @@ exports.createField = catchAsync(async (req, res, next) => {
   const transaction = await sequelize.transaction();
 
   try {
-    const { users, ...others } = req.body;
+    const { users, enums, type, isComputed, formula, ...others } = req.body;
 
-    // ✅ GET LAST ORDER INDEX
+    if (isComputed && !formula) {
+      return next(new AppError('Computed field must have formula', 400));
+    }
+
+    if (type === 'enum' && (!enums || !enums.length)) {
+      return next(new AppError('Enum field must have values', 400));
+    }
+
     const lastField = await CargoFields.findOne({
       order: [['orderIndex', 'DESC']],
       attributes: ['orderIndex'],
@@ -127,11 +143,22 @@ exports.createField = catchAsync(async (req, res, next) => {
     const field = await CargoFields.create(
       {
         ...others,
+        type,
+        isComputed: !!isComputed,
+        formula: isComputed ? formula : null,
         orderIndex: nextOrder,
       },
       { transaction }
     );
+    if (type === 'enum') {
+      const enumData = enums.map((e) => ({
+        fieldId: field.id,
+        name: e.name,
+        color: e.color || '#999',
+      }));
 
+      await CargoFieldEnumValues.bulkCreate(enumData, { transaction });
+    }
     if (users && users.length > 0) {
       const permissions = users.map((userId) => ({
         userId,
@@ -163,6 +190,12 @@ exports.updateField = catchAsync(async (req, res, next) => {
 
   try {
     const field = await CargoFields.findByPk(req.params.id, {
+      include: [
+        {
+          model: CargoFieldEnumValues,
+          as: 'enums',
+        },
+      ],
       transaction,
     });
 
@@ -171,20 +204,54 @@ exports.updateField = catchAsync(async (req, res, next) => {
       return next(new AppError('Field not found', 404));
     }
 
-    const { users, ...others } = req.body;
+    const { users, enums, type, isComputed, formula, ...others } = req.body;
+    // console.log(enums);
+    if (isComputed && !formula) {
+      return next(new AppError('Computed field must have formula', 400));
+    }
 
-    // ✅ UPDATE FIELD DATA
-    await field.update(others, { transaction });
+    if (type === 'enum' && (!enums || !enums.length)) {
+      return next(new AppError('Enum field must have values', 400));
+    }
+    const oldType = field.type;
 
-    // ✅ SYNC PERMISSIONS (FAST & CLEAN)
+    if (oldType === 'enum' && type !== 'enum') {
+      await CargoFieldEnumValues.destroy({
+        where: { fieldId: field.id },
+        transaction,
+      });
+    }
+    await field.update(
+      {
+        ...others,
+        type,
+        isComputed: !!isComputed,
+        formula: isComputed ? formula : null,
+      },
+      { transaction }
+    );
+
+    if (type === 'enum') {
+      await CargoFieldEnumValues.destroy({
+        where: { fieldId: field.id },
+        transaction,
+      });
+
+      const enumData = enums.map((e) => ({
+        fieldId: field.id,
+        name: e.name,
+        color: e.color || '#999999',
+      }));
+
+      await CargoFieldEnumValues.bulkCreate(enumData, { transaction });
+    }
+
     if (users) {
-      // Remove all old permissions
       await CargoFieldPermission.destroy({
         where: { fieldId: field.id },
         transaction,
       });
 
-      // Add new ones (no extra DB fetch)
       if (users.length > 0) {
         const permissions = users.map((userId) => ({
           userId,

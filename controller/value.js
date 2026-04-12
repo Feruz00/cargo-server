@@ -5,24 +5,25 @@ const {
   CargoFieldPermission,
   CargoFieldValues,
   sequelize,
+  CargoFieldEnumValues,
 } = require('../models');
 const AppError = require('../utils/appError');
 const { catchAsync } = require('../utils/catchAsync');
 const XLSX = require('xlsx');
 const { getIO } = require('../socket');
+const dayjs = require('dayjs');
 
-/**
- * GET ALL VALUES
- */
 exports.getValues = catchAsync(async (req, res) => {
-  let { page = 1, limit = 15 } = req.query;
+  let { page = 1, limit = 15, sort, order } = req.query;
 
   page = parseInt(page);
   limit = parseInt(limit);
 
   if (page < 1) page = 1;
   if (limit < 1 || limit > 100) limit = 15;
+
   let fldIds = [];
+
   if (req.user.role === 'user') {
     const permissions = await CargoFieldPermission.findAll({
       where: { userId: req.user.id },
@@ -33,169 +34,191 @@ exports.getValues = catchAsync(async (req, res) => {
     fldIds = permissions.map((p) => p.fieldId);
 
     if (!fldIds.length) {
-      return res.json({
-        fields: [],
-        data: [],
-        count: 0,
-      });
+      return res.json({ fields: [], data: [], count: 0 });
     }
   }
 
-  const fields = await CargoFields.findAll({
+  let fields = await CargoFields.findAll({
     where: req.user.role === 'user' ? { id: fldIds } : {},
     order: [['orderIndex', 'ASC']],
-    raw: true,
+    include: [
+      {
+        model: CargoFieldEnumValues,
+        as: 'enums',
+        attributes: ['id', 'name', 'color'],
+      },
+    ],
   });
 
-  const rowNums = await CargoFieldValues.findAll({
-    attributes: ['rowNum', [fn('MAX', col('createdAt')), 'createdAt']],
-    where:
-      req.user.role === 'user'
-        ? {
-            createdUser: req.user.id,
-            fieldId: fldIds,
-          }
-        : {},
-    group: ['rowNum'],
-    order: [[literal('rowNum'), 'DESC']],
-    offset: (page - 1) * limit,
-    limit,
-    raw: true,
-  });
+  fields = fields.map((f) => f.toJSON());
 
-  const rowNumList = rowNums.map((r) => r.rowNum);
+  const conditions = [];
 
-  if (!rowNumList.length) {
-    return res.json({
-      fields,
-      data: [],
-      count: 0,
+  for (const field of fields) {
+    if (field.type === 'enum' && req.query[field.key]) {
+      conditions.push({
+        fieldId: field.id,
+        value: { [Op.in]: req.query[field.key].split(',') },
+      });
+    }
+
+    if (field.type === 'text' && req.query[field.key]) {
+      conditions.push({
+        fieldId: field.id,
+        value: { [Op.like]: `%${req.query[field.key]}%` },
+      });
+    }
+
+    if (field.type === 'date') {
+      const startKey = `${field.key}From`;
+      const endKey = `${field.key}End`;
+
+      if (req.query[startKey] && req.query[endKey]) {
+        const start = dayjs(req.query[startKey]).format('YYYY-MM-DD');
+        const end = dayjs(req.query[endKey]).format('YYYY-MM-DD');
+
+        conditions.push({
+          fieldId: field.id,
+          value: {
+            [Op.between]: [start, end], // ✅ STRING compare
+          },
+        });
+      }
+    }
+  }
+
+  let matchedRowIds = null;
+
+  for (const cond of conditions) {
+    const rows = await CargoFieldValues.findAll({
+      attributes: ['rowId'],
+      where: cond,
+      raw: true,
+    });
+
+    const ids = rows.map((r) => r.rowId);
+
+    if (!matchedRowIds) {
+      matchedRowIds = ids;
+    } else {
+      matchedRowIds = matchedRowIds.filter((id) => ids.includes(id));
+    }
+  }
+
+  if (req.user.role === 'user') {
+    const userRows = await CargoFieldValues.findAll({
+      attributes: ['rowId'],
+      where: {
+        createdUser: req.user.id,
+        fieldId: { [Op.in]: fldIds },
+      },
+      raw: true,
+    });
+
+    const userIds = userRows.map((r) => r.rowId);
+
+    if (matchedRowIds) {
+      matchedRowIds = matchedRowIds.filter((id) => userIds.includes(id));
+    } else {
+      matchedRowIds = userIds;
+    }
+  }
+
+  let rowIds = [...new Set(matchedRowIds || [])];
+
+  if (!rowIds.length) {
+    return res.json({ fields, data: [], count: 0 });
+  }
+
+  const sortField = fields.find((f) => f.key === sort);
+
+  let sortMap = {};
+
+  if (sortField) {
+    const sortRows = await CargoFieldValues.findAll({
+      where: {
+        rowId: { [Op.in]: rowIds },
+        fieldId: sortField.id,
+      },
+      attributes: ['rowId', 'value'],
+      raw: true,
+    });
+
+    sortRows.forEach((r) => {
+      let val = r.value;
+
+      if (sortField.type === 'number') {
+        val = Number(val) || 0;
+      } else if (sortField.type === 'date') {
+        val = new Date(val).getTime() || 0;
+      } else {
+        val = val ? val.toString().toLowerCase() : '';
+      }
+
+      sortMap[r.rowId] = val;
     });
   }
 
+  let finalRows = rowIds.map((rowId) => ({
+    rowId,
+    value: sortField ? (sortMap[rowId] ?? null) : rowId,
+  }));
+
+  finalRows.sort((a, b) => {
+    if (!sortField) return b.rowId.localeCompare(a.rowId);
+
+    const A = a.value;
+    const B = b.value;
+
+    if (A === null) return 1;
+    if (B === null) return -1;
+
+    if (typeof A === 'number') {
+      return order === 'ascend' ? A - B : B - A;
+    }
+
+    if (A > B) return order === 'ascend' ? 1 : -1;
+    if (A < B) return order === 'ascend' ? -1 : 1;
+    return 0;
+  });
+
+  const pageRowIds = finalRows
+    .slice((page - 1) * limit, page * limit)
+    .map((r) => r.rowId);
+
   const values = await CargoFieldValues.findAll({
-    where:
-      req.user.role === 'user'
-        ? {
-            fieldId: fldIds,
-            rowNum: { [Op.in]: rowNumList },
-            createdUser: req.user.id,
-          }
-        : { rowNum: { [Op.in]: rowNumList } },
+    where: {
+      rowId: { [Op.in]: pageRowIds },
+      ...(req.user.role === 'user' ? { fieldId: { [Op.in]: fldIds } } : {}),
+    },
     include: [
       {
         model: CargoFields,
         as: 'field',
-        attributes: ['key', 'name', 'type', 'isComputed', 'formula'],
-      },
-      {
-        model: Users,
-        as: 'createdByUser',
-        attributes: ['id', 'name', 'username'],
-      },
-      {
-        model: Users,
-        as: 'updatedByUser',
-        attributes: ['id', 'name', 'username'],
+        attributes: ['key', 'type', 'isComputed', 'formula'],
       },
     ],
     raw: true,
     nest: true,
   });
 
-  const rowsMap = {};
+  const dataMap = {};
 
-  values.forEach((v) => {
-    const rowNum = v.rowNum;
-
-    if (!rowsMap[rowNum]) {
-      rowsMap[rowNum] = {
-        rowNum,
-        createdAt: v.createdAt,
-        updatedAt: v.updatedAt,
-        createdUser: v.createdByUser || null,
-        updatedUser: v.updatedByUser || null,
-      };
-    }
-
-    // assign field value
-    rowsMap[rowNum][v.field.key] = v.value;
-
-    // latest createdAt
-    if (new Date(v.createdAt) > new Date(rowsMap[rowNum].createdAt)) {
-      rowsMap[rowNum].createdAt = v.createdAt;
-      rowsMap[rowNum].createdUser = v.createdByUser;
-    }
-
-    // latest updatedAt
-    if (new Date(v.updatedAt) > new Date(rowsMap[rowNum].updatedAt)) {
-      rowsMap[rowNum].updatedAt = v.updatedAt;
-      rowsMap[rowNum].updatedUser = v.updatedByUser;
-    }
+  pageRowIds.forEach((id) => {
+    dataMap[id] = { rowId: id };
   });
 
-  let data = rowNumList.map((rowNum) => rowsMap[rowNum]);
-
-  function isSafeFormula(formula) {
-    return /^[0-9a-zA-Z_+\-*/().\s]+$/.test(formula);
-  }
-
-  function safeEvalFormula(formula, context) {
-    try {
-      if (!isSafeFormula(formula)) return formula;
-
-      const keys = Object.keys(context);
-
-      const values = keys.map((k) => {
-        const val = context[k];
-
-        // 🔥 convert numeric strings to numbers
-        if (val === null || val === undefined) return 0;
-
-        const num = Number(val);
-        return isNaN(num) ? 0 : num;
-      });
-
-      const fn = new Function(...keys, `return ${formula}`);
-      return fn(...values);
-    } catch (err) {
-      return formula;
-    }
-  }
-
-  // 🚀 apply computed fields
-  data = data.map((row) => {
-    const computedRow = { ...row };
-
-    fields.forEach((field) => {
-      if (field.isComputed && field.formula) {
-        const result = safeEvalFormula(field.formula, computedRow);
-
-        if (result === undefined || result === null || Number.isNaN(result)) {
-          computedRow[field.key] = field.formula; // fallback text
-        } else {
-          computedRow[field.key] = result;
-        }
-      }
-    });
-
-    return computedRow;
+  values.forEach((row) => {
+    const key = row.field.key;
+    dataMap[row.rowId][key] = row.value;
   });
 
-  const total = await CargoFieldValues.count({
-    distinct: true,
-    col: 'rowNum',
-    where:
-      req.user.role == 'user'
-        ? {
-            createdUser: req.user.id,
-          }
-        : {},
-  });
+  const data = pageRowIds.map((id) => dataMap[id]);
+
   res.json({
     fields,
     data,
-    count: total,
+    count: rowIds.length,
   });
 });
 

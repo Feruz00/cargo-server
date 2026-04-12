@@ -1,25 +1,38 @@
 'use strict';
 
+const { v4: uuidv4 } = require('uuid');
+
 module.exports = {
   async up(queryInterface, Sequelize) {
     const now = new Date();
 
+    // 🔹 USERS
     const users = await queryInterface.sequelize.query(
       `SELECT id FROM tbl_users WHERE role = 'user'`,
       { type: Sequelize.QueryTypes.SELECT }
     );
 
+    // 🔹 FIELDS
     const fields = await queryInterface.sequelize.query(
       `SELECT id, \`key\`, type, isComputed, formula FROM tbl_cargo_fields`,
       { type: Sequelize.QueryTypes.SELECT }
     );
 
+    // 🔹 ENUM VALUES
     const enumValues = await queryInterface.sequelize.query(
       `SELECT fieldId, name FROM tbl_cargo_field_enum_values`,
       { type: Sequelize.QueryTypes.SELECT }
     );
 
-    // 👉 maps
+    // 🔹 PERMISSIONS
+    const permissions = await queryInterface.sequelize.query(
+      `SELECT fieldId, userId FROM tbl_cargo_field_permissions`,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+
+    // =========================
+    // 🔥 MAPS
+    // =========================
     const fieldById = {};
     fields.forEach((f) => (fieldById[f.id] = f));
 
@@ -29,45 +42,64 @@ module.exports = {
       enumMap[e.fieldId].push(e.name);
     });
 
-    const permissions = await queryInterface.sequelize.query(
-      `SELECT fieldId, userId FROM tbl_cargo_field_permissions`,
-      { type: Sequelize.QueryTypes.SELECT }
-    );
-
     const userFieldsMap = {};
     permissions.forEach((p) => {
       if (!userFieldsMap[p.userId]) userFieldsMap[p.userId] = [];
       userFieldsMap[p.userId].push(p.fieldId);
     });
 
-    const rows = [];
-
+    // =========================
+    // 🔧 HELPERS
+    // =========================
     const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
     const randNum = (min, max) =>
       Math.floor(Math.random() * (max - min + 1)) + min;
 
+    // ✅ SAFE FORMULA
     const evalFormula = (formula, data) => {
       try {
-        return Function(
-          ...Object.keys(data),
-          `return ${formula}`
-        )(...Object.values(data));
-      } catch {
+        if (!formula) return null;
+
+        const keys = Object.keys(data);
+
+        const values = keys.map((k) => {
+          const v = Number(data[k]);
+          return isNaN(v) ? 0 : v;
+        });
+
+        const result = Function(...keys, `return ${formula}`)(...values);
+
+        if (result === null || result === undefined) return null;
+
+        const num = Number(result);
+        return isNaN(num) ? null : num;
+      } catch (err) {
         return null;
       }
     };
 
-    users.forEach((user) => {
+    const rows = [];
+
+    // =========================
+    // 🚀 GENERATE DATA
+    // =========================
+    for (const user of users) {
       const allowedFieldIds = userFieldsMap[user.id] || [];
+      if (!allowedFieldIds.length) continue;
+
       const totalRows = randNum(50, 100);
 
-      for (let rowNum = 1; rowNum <= totalRows; rowNum++) {
+      for (let i = 0; i < totalRows; i++) {
+        const rowId = uuidv4(); // ✅ UNIQUE ROW ID
         const rowData = {};
 
-        // ✅ base values
-        allowedFieldIds.forEach((fieldId) => {
+        // =========================
+        // 🔹 BASE VALUES
+        // =========================
+        for (const fieldId of allowedFieldIds) {
           const field = fieldById[fieldId];
-          if (!field || field.isComputed) return;
+          if (!field || field.isComputed) continue;
 
           let value = null;
 
@@ -78,14 +110,14 @@ module.exports = {
 
             case 'text':
               if (field.key === 'tracking_number')
-                value = `TRK-${user.id}-${rowNum}`;
+                value = `TRK-${user.id}-${i}`;
               else if (field.key === 'client_name')
-                value = `Müşderi ${user.id}-${rowNum}`;
-              else value = 'Test maglumat';
+                value = `Client ${user.id}-${i}`;
+              else value = 'Test data';
               break;
 
             case 'date':
-              value = new Date('2026-04-01');
+              value = `2026-04-${String(randNum(1, 28)).padStart(2, '0')}`;
               break;
 
             case 'enum':
@@ -97,37 +129,50 @@ module.exports = {
           }
 
           rowData[field.key] = value;
-        });
+        }
 
-        // ✅ computed
-        allowedFieldIds.forEach((fieldId) => {
+        // =========================
+        // 🔹 COMPUTED FIELDS
+        // =========================
+        for (const fieldId of allowedFieldIds) {
           const field = fieldById[fieldId];
-          if (!field || !field.isComputed) return;
+          if (!field || !field.isComputed) continue;
 
-          rowData[field.key] = evalFormula(field.formula, rowData);
-        });
+          const result = evalFormula(field.formula, rowData);
 
-        // ✅ save
-        allowedFieldIds.forEach((fieldId) => {
+          rowData[field.key] = result; // ✅ store computed result
+        }
+
+        // =========================
+        // 💾 SAVE ROW
+        // =========================
+        for (const fieldId of allowedFieldIds) {
           const field = fieldById[fieldId];
-          if (!field) return;
+          if (!field) continue;
+
+          let val = rowData[field.key];
+
+          // ✅ enforce computed numeric safety
+          if (field.isComputed) {
+            val = val === null ? null : Number(val);
+          }
 
           rows.push({
+            rowId, // 🔥 UUID GROUP KEY
             fieldId,
-            value:
-              rowData[field.key] !== undefined
-                ? String(rowData[field.key])
-                : '',
-            rowNum,
+            value: val === null || val === undefined ? null : String(val), // store as string
             createdUser: user.id,
             updatedUser: user.id,
             createdAt: now,
             updatedAt: now,
           });
-        });
+        }
       }
-    });
+    }
 
+    // =========================
+    // 🚀 INSERT
+    // =========================
     await queryInterface.bulkInsert('tbl_cargo_field_values', rows);
   },
 

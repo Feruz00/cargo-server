@@ -16,6 +16,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'fieldId',
         as: 'permissions',
       });
+      CargoFields.hasMany(models.CargoFieldEnumValues, {
+        foreignKey: 'fieldId',
+        as: 'enums',
+      });
     }
   }
   CargoFields.init(
