@@ -13,6 +13,7 @@ const XLSX = require('xlsx');
 const { getIO } = require('../socket');
 const dayjs = require('dayjs');
 const { v4: uuidv4 } = require('uuid');
+const { safeEvalFormula } = require('../utils/functions');
 
 exports.getValues = catchAsync(async (req, res) => {
   let { page = 1, limit = 15, sort, order } = req.query;
@@ -105,24 +106,21 @@ exports.getValues = catchAsync(async (req, res) => {
       matchedRowIds = matchedRowIds.filter((id) => ids.includes(id));
     }
   }
+  const userRows = await CargoFieldValues.findAll({
+    attributes: ['rowId', 'rowNum'],
+    where: {
+      ...(req.user.role === 'user' ? { createdUser: req.user.id } : {}),
+      ...(fldIds.length ? { fieldId: { [Op.in]: fldIds } } : {}),
+    },
+    raw: true,
+  });
 
-  if (req.user.role === 'user') {
-    const userRows = await CargoFieldValues.findAll({
-      attributes: ['rowId', 'rowNum'],
-      where: {
-        createdUser: req.user.id,
-        fieldId: { [Op.in]: fldIds },
-      },
-      raw: true,
-    });
+  const userIds = userRows.map((r) => r.rowId);
 
-    const userIds = userRows.map((r) => r.rowId);
-
-    if (matchedRowIds) {
-      matchedRowIds = matchedRowIds.filter((id) => userIds.includes(id));
-    } else {
-      matchedRowIds = userIds;
-    }
+  if (matchedRowIds) {
+    matchedRowIds = matchedRowIds.filter((id) => userIds.includes(id));
+  } else {
+    matchedRowIds = userIds;
   }
 
   let rowIds = [...new Set(matchedRowIds || [])];
@@ -131,6 +129,21 @@ exports.getValues = catchAsync(async (req, res) => {
     return res.json({ fields, data: [], count: 0 });
   }
 
+  const rowMeta = await CargoFieldValues.findAll({
+    where: {
+      rowId: { [Op.in]: rowIds },
+    },
+    attributes: ['rowId', 'rowNum'],
+    raw: true,
+  });
+
+  const metaMap = {};
+
+  rowMeta.forEach((r) => {
+    if (!metaMap[r.rowId]) {
+      metaMap[r.rowId] = r.rowNum;
+    }
+  });
   const sortField = fields.find((f) => f.key === sort);
 
   let sortMap = {};
@@ -166,11 +179,11 @@ exports.getValues = catchAsync(async (req, res) => {
   }));
 
   finalRows.sort((a, b) => {
-    // if (!sortField) return b.rowId.localeCompare(a.rowId);
     if (!sortField) {
-      const aRowNum = a.rowNum ?? 0;
-      const bRowNum = b.rowNum ?? 0;
-      return bRowNum - aRowNum;
+      const aTime = metaMap[a.rowId] ?? 0;
+      const bTime = metaMap[b.rowId] ?? 0;
+
+      return bTime - aTime;
     }
     const A = a.value;
     const B = b.value;
@@ -228,59 +241,137 @@ exports.getValues = catchAsync(async (req, res) => {
 });
 
 exports.create = catchAsync(async (req, res) => {
-  const pers = await CargoFieldPermission.findAll({
-    where: { userId: req.user.id },
-  });
-  const perIds = pers.map((row) => row.fieldId);
+  const rowId = uuidv4();
 
-  let fields = await CargoFields.findAll({ where: { id: perIds } });
-  fields = fields.map((row) => ({ key: row.key, id: row.id, type: row.type }));
+  const permissions = await CargoFieldPermission.findAll({
+    where: { userId: req.user.id },
+    attributes: ['fieldId'],
+    raw: true,
+  });
+
+  const fieldIds = permissions.map((p) => p.fieldId);
+
+  if (!fieldIds.length) {
+    return res.status(403).json({ message: 'No permissions' });
+  }
+
+  let fields = await CargoFields.findAll({
+    where: { id: fieldIds },
+    include: [
+      {
+        model: CargoFieldEnumValues,
+        as: 'enums',
+        attributes: ['name', 'color'],
+      },
+    ],
+  });
+
+  fields = fields.map((f) => f.toJSON());
+
+  const request = req.body;
+  const rowData = {};
 
   const lastField = await CargoFieldValues.findOne({
     order: [['rowNum', 'DESC']],
     attributes: ['rowNum'],
   });
 
-  const num = lastField ? lastField.rowNum + 1 : 1;
+  const rowNum = lastField ? lastField.rowNum + 1 : 1;
 
-  const request = req.body;
-  const data = [];
+  for (const field of fields) {
+    if (field.isComputed) continue;
 
-  fields.forEach((field) => {
-    const key = Object.keys(request).find((key) => key === field.key);
-    if (key) {
-      data.push({
-        fieldId: field.id,
-        value: request[key],
-        rowNum: num,
-        createdUser: req.user.id,
-      });
-    } else {
-      data.push({
-        fieldId: field.id,
-        value: '',
-        rowNum: num,
-        createdUser: req.user.id,
-      });
+    let value = request[field.key];
+
+    if (value === undefined || value === null) {
+      rowData[field.key] = null;
+      continue;
     }
-  });
+
+    // 🔥 TYPE HANDLING
+    switch (field.type) {
+      case 'number':
+        value = Number(value);
+        rowData[field.key] = isNaN(value) ? null : value;
+        break;
+
+      case 'date':
+        value = dayjs(value).format('YYYY-MM-DD'); // ✅ FIX
+        rowData[field.key] = value;
+        break;
+
+      case 'enum':
+        const allowed = field.enums.map((e) => e.name);
+
+        if (!allowed.includes(value)) {
+          throw new Error(`Invalid enum value for ${field.key}`);
+        }
+
+        rowData[field.key] = value;
+        break;
+
+      default:
+        rowData[field.key] = value;
+    }
+  }
+
+  const isSafeFormula = (formula) => /^[0-9a-zA-Z_+\-*/().\s]+$/.test(formula);
+
+  const evalFormula = (formula, data) => {
+    try {
+      if (!formula || !isSafeFormula(formula)) return null;
+
+      const keys = Object.keys(data);
+      const values = keys.map((k) => Number(data[k]) || 0);
+
+      const fn = new Function(...keys, `return ${formula}`);
+      const result = fn(...values);
+
+      if (result === undefined || result === null) return null;
+
+      const num = Number(result);
+      return isNaN(num) ? null : num;
+    } catch {
+      return null;
+    }
+  };
+
+  for (const field of fields) {
+    if (!field.isComputed) continue;
+
+    const result = evalFormula(field.formula, rowData);
+    rowData[field.key] = result;
+  }
+
+  const data = fields.map((field) => ({
+    rowId,
+    fieldId: field.id,
+    value:
+      rowData[field.key] === null || rowData[field.key] === undefined
+        ? null
+        : String(rowData[field.key]),
+    createdUser: req.user.id,
+    updatedUser: req.user.id,
+    rowNum,
+  }));
 
   await CargoFieldValues.bulkCreate(data);
+
+  // 🔌 SOCKET
   const io = getIO();
-  const newRow = await buildRow(num);
 
   io.to('head-room').emit('values:created', {
-    rowNum: num,
-    row: newRow,
+    rowId,
+    row: rowData,
   });
-  return res.json({ data: [] });
-});
 
+  res.json({ success: true });
+});
 exports.getOne = catchAsync(async (req, res) => {
-  const rowNum = req.params.id;
+  const rowId = req.params.id;
   const field = await CargoFieldValues.findAll({
     where: {
-      rowNum: rowNum,
+      rowId: rowId,
     },
     attributes: ['id', 'value', 'fieldId'],
   });
@@ -289,15 +380,17 @@ exports.getOne = catchAsync(async (req, res) => {
 });
 
 exports.update = catchAsync(async (req, res) => {
-  const rowNum = req.params.id;
+  const rowId = req.params.id;
   const request = req.body;
 
+  // 1. permissions
   const pers = await CargoFieldPermission.findAll({
     where: { userId: req.user.id },
   });
 
   const perIds = pers.map((p) => p.fieldId);
 
+  // 2. fields
   const fields = await CargoFields.findAll({
     where: { id: perIds },
   });
@@ -307,61 +400,97 @@ exports.update = catchAsync(async (req, res) => {
     fieldMap[f.id] = f;
   });
 
+  // 3. existing values
   const values = await CargoFieldValues.findAll({
-    where: { rowNum },
+    where: { rowId },
   });
+
+  if (!values.length) {
+    return res.status(404).json({ message: 'Row not found' });
+  }
+
+  const rowNum = values[0].rowNum;
 
   const valueMap = {};
+  const rowData = {};
+
+  // ✅ FIX: build context using field.key (IMPORTANT)
   values.forEach((v) => {
+    const field = fields.find((f) => f.id === v.fieldId);
+    if (!field) return;
+
     valueMap[v.fieldId] = v;
+    rowData[field.key] = v.value;
   });
 
+  // 4. update loop
   for (const fieldId of perIds) {
     const field = fieldMap[fieldId];
     if (!field) continue;
 
-    const val = request[field.key] ?? '';
+    let val = request[field.key];
 
+    if (!field.isComputed) {
+      rowData[field.key] = val;
+    }
+
+    if (field.isComputed) {
+      val = safeEvalFormula(field.formula, rowData);
+
+      if (val === undefined || val === null || isNaN(val)) {
+        val = null;
+      }
+    }
+
+    // 3. update final context
+    rowData[field.key] = val;
+
+    // 4. save to DB
     if (valueMap[fieldId]) {
       await valueMap[fieldId].update({
-        value: val,
+        value: val === null ? null : String(val),
         updatedUser: req.user.id,
       });
     } else {
       await CargoFieldValues.create({
         fieldId,
-        value: val,
+        value: val === null ? null : String(val),
+        rowId,
         rowNum,
         createdUser: req.user.id,
         updatedUser: req.user.id,
       });
     }
   }
-  const updatedRow = await buildRow(rowNum);
-  const io = getIO();
 
+  // 5. rebuild row
+  const updatedRow = await buildRow(rowId);
+
+  // 6. realtime emit
+  const io = getIO();
   io.to('head-room').emit('values:updated', {
-    rowNum,
+    rowId,
     updatedRow,
   });
+
   res.status(200).json({
     status: 'success',
   });
 });
 
 exports.deleteOne = catchAsync(async (req, res, next) => {
-  const rowNum = req.params.id;
-  const deletedRow = await buildRow(rowNum);
+  const rowId = req.params.id;
+  const deletedRow = await buildRow(rowId);
   const count = await CargoFieldValues.destroy({
     where: {
-      rowNum: rowNum,
+      rowId: rowId,
     },
   });
   if (!count) return next(new AppError('Field not found', 404));
   const io = getIO();
 
   io.to('head-room').emit('values:deleted', {
-    rowNum,
+    rowId,
     deletedRow, // optional
   });
   res.status(204).json({
@@ -587,7 +716,7 @@ exports.getChartData = catchAsync(async (req, res) => {
   });
 });
 
-async function buildRow(rowNum) {
+async function buildRow(rowId) {
   function isSafeFormula(formula) {
     return /^[0-9a-zA-Z_+\-*/().\s]+$/.test(formula);
   }
@@ -618,7 +747,7 @@ async function buildRow(rowNum) {
   });
 
   const values = await CargoFieldValues.findAll({
-    where: { rowNum },
+    where: { rowId },
     include: [
       {
         model: CargoFields,
@@ -641,7 +770,7 @@ async function buildRow(rowNum) {
   });
 
   const row = {
-    rowNum,
+    rowId,
     createdAt: null,
     updatedAt: null,
     createdUser: null,
@@ -662,7 +791,6 @@ async function buildRow(rowNum) {
     }
   }
 
-  // ✅ COMPUTED FIELDS (CRITICAL FIX)
   for (const field of fields) {
     if (field.isComputed && field.formula) {
       const result = safeEvalFormula(field.formula, row);
@@ -673,6 +801,6 @@ async function buildRow(rowNum) {
           : result;
     }
   }
-
+  // console.log(row);
   return row;
 }

@@ -1,14 +1,17 @@
-export function isSafeFormula(formula) {
-  return /^[0-9a-zA-Z_+\-*/().\s]+$/.test(formula);
+function isSafeFormula(formula) {
+  return /^[0-9a-zA-Z_+\-*/().\s]+$/.test(formula.trim());
 }
-export function safeEvalFormula(formula, context) {
+
+function safeEvalFormula(formula, context) {
   try {
-    if (!isSafeFormula(formula)) return formula;
+    if (!formula) return null;
+    if (!isSafeFormula(formula)) return null;
 
     const keys = Object.keys(context);
 
     const values = keys.map((k) => {
       const val = context[k];
+
       if (val === null || val === undefined) return 0;
 
       const num = Number(val);
@@ -17,7 +20,9 @@ export function safeEvalFormula(formula, context) {
 
     const fn = new Function(...keys, `return ${formula}`);
     return fn(...values);
-  } catch {
-    return formula;
+  } catch (e) {
+    return null;
   }
 }
+
+module.exports = { safeEvalFormula };
