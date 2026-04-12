@@ -12,6 +12,7 @@ const { catchAsync } = require('../utils/catchAsync');
 const XLSX = require('xlsx');
 const { getIO } = require('../socket');
 const dayjs = require('dayjs');
+const { v4: uuidv4 } = require('uuid');
 
 exports.getValues = catchAsync(async (req, res) => {
   let { page = 1, limit = 15, sort, order } = req.query;
@@ -91,7 +92,7 @@ exports.getValues = catchAsync(async (req, res) => {
 
   for (const cond of conditions) {
     const rows = await CargoFieldValues.findAll({
-      attributes: ['rowId'],
+      attributes: ['rowId', 'rowNum'],
       where: cond,
       raw: true,
     });
@@ -107,7 +108,7 @@ exports.getValues = catchAsync(async (req, res) => {
 
   if (req.user.role === 'user') {
     const userRows = await CargoFieldValues.findAll({
-      attributes: ['rowId'],
+      attributes: ['rowId', 'rowNum'],
       where: {
         createdUser: req.user.id,
         fieldId: { [Op.in]: fldIds },
@@ -140,7 +141,7 @@ exports.getValues = catchAsync(async (req, res) => {
         rowId: { [Op.in]: rowIds },
         fieldId: sortField.id,
       },
-      attributes: ['rowId', 'value'],
+      attributes: ['rowId', 'value', 'rowNum'],
       raw: true,
     });
 
@@ -165,8 +166,12 @@ exports.getValues = catchAsync(async (req, res) => {
   }));
 
   finalRows.sort((a, b) => {
-    if (!sortField) return b.rowId.localeCompare(a.rowId);
-
+    // if (!sortField) return b.rowId.localeCompare(a.rowId);
+    if (!sortField) {
+      const aRowNum = a.rowNum ?? 0;
+      const bRowNum = b.rowNum ?? 0;
+      return bRowNum - aRowNum;
+    }
     const A = a.value;
     const B = b.value;
 
@@ -240,6 +245,7 @@ exports.create = catchAsync(async (req, res) => {
 
   const request = req.body;
   const data = [];
+
   fields.forEach((field) => {
     const key = Object.keys(request).find((key) => key === field.key);
     if (key) {
