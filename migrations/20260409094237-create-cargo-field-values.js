@@ -39,10 +39,10 @@ module.exports = {
         onDelete: 'CASCADE',
         onUpdate: 'CASCADE',
       },
-      // rowNum: {
-      //   type: Sequelize.INTEGER,
-      //   allowNull: false,
-      // },
+      rowNum: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+      },
       rowId: {
         type: Sequelize.UUID,
         allowNull: false,

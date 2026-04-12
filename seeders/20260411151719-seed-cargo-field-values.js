@@ -57,6 +57,7 @@ module.exports = {
       Math.floor(Math.random() * (max - min + 1)) + min;
 
     // ✅ SAFE FORMULA
+
     const evalFormula = (formula, data) => {
       try {
         if (!formula) return null;
@@ -81,6 +82,7 @@ module.exports = {
 
     const rows = [];
 
+    let rowNum = 1;
     // =========================
     // 🚀 GENERATE DATA
     // =========================
@@ -160,12 +162,14 @@ module.exports = {
           rows.push({
             rowId, // 🔥 UUID GROUP KEY
             fieldId,
+            rowNum,
             value: val === null || val === undefined ? null : String(val), // store as string
             createdUser: user.id,
             updatedUser: user.id,
             createdAt: now,
             updatedAt: now,
           });
+          ++rowNum;
         }
       }
     }
@@ -173,6 +177,7 @@ module.exports = {
     // =========================
     // 🚀 INSERT
     // =========================
+
     await queryInterface.bulkInsert('tbl_cargo_field_values', rows);
   },
 

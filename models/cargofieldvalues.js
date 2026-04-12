@@ -33,10 +33,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: false,
       },
-      // rowNum: {
-      //   type: DataTypes.INTEGER,
-      //   allowNull: false,
-      // },
+      rowNum: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
       rowId: {
         type: DataTypes.UUID,
         allowNull: false,
