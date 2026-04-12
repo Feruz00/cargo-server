@@ -4,6 +4,7 @@ const {
   CargoFieldPermission,
   sequelize,
   CargoFields,
+  CargoFieldEnumValues,
 } = require('../models');
 const AppError = require('../utils/appError');
 const { catchAsync } = require('../utils/catchAsync');
@@ -137,6 +138,13 @@ exports.myFields = catchAsync(async (req, res, next) => {
         [Op.in]: ids,
       },
     },
+    include: [
+      {
+        model: CargoFieldEnumValues,
+        as: 'enums',
+        attributes: ['id', 'name', 'color'],
+      },
+    ],
     order: [['orderIndex', 'ASC']],
   });
   return res.json({ data: fields });
