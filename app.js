@@ -55,6 +55,7 @@ app.use('/api/users', require('./routes/user'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/field', require('./routes/field'));
 app.use('/api/value', require('./routes/values'));
+app.use('/api/charts', require('./routes/charts'));
 
 app.use((req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
