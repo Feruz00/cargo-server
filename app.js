@@ -13,7 +13,7 @@ const AppError = require('./utils/appError');
 
 const app = express();
 
-// app.enable('trust proxy');
+app.enable('trust proxy');
 
 app.use(cookieParser());
 const allowedOrigins =

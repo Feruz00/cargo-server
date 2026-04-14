@@ -110,7 +110,7 @@ exports.getValues = catchAsync(async (req, res) => {
     attributes: ['rowId', 'rowNum'],
     where: {
       ...(req.user.role === 'user' ? { createdUser: req.user.id } : {}),
-      ...(fldIds.length ? { fieldId: { [Op.in]: fldIds } } : {}),
+      ...(req.user.role === 'user' ? { fieldId: { [Op.in]: fldIds } } : {}),
     },
     raw: true,
   });
@@ -204,7 +204,7 @@ exports.getValues = catchAsync(async (req, res) => {
     .slice((page - 1) * limit, page * limit)
     .map((r) => r.rowId);
 
-  const values = await CargoFieldValues.findAll({
+  let values = await CargoFieldValues.findAll({
     where: {
       rowId: { [Op.in]: pageRowIds },
       ...(req.user.role === 'user' ? { fieldId: { [Op.in]: fldIds } } : {}),
@@ -216,10 +216,8 @@ exports.getValues = catchAsync(async (req, res) => {
         attributes: ['key', 'type', 'isComputed', 'formula'],
       },
     ],
-    raw: true,
-    nest: true,
   });
-
+  values = values.map((row) => row.toJSON());
   const dataMap = {};
 
   pageRowIds.forEach((id) => {
@@ -545,7 +543,7 @@ exports.importExcel = catchAsync(async (req, res) => {
 
   const fieldMap = {};
   fields.forEach((f) => {
-    fieldMap[f.name] = f; // IMPORTANT: Excel header must match name
+    fieldMap[f.name] = f;
   });
 
   const maxRow = await CargoFieldValues.max('rowNum');
