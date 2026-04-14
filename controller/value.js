@@ -227,6 +227,7 @@ exports.getValues = catchAsync(async (req, res) => {
   values.forEach((row) => {
     const key = row.field.key;
     dataMap[row.rowId][key] = row.value;
+    dataMap[row.rowId]['rowNum'] = row.rowNum;
   });
 
   const data = pageRowIds.map((id) => dataMap[id]);
@@ -357,7 +358,7 @@ exports.create = catchAsync(async (req, res) => {
 
   // 🔌 SOCKET
   const io = getIO();
-
+  rowData['rowNum'] = rowNum;
   io.to('head-room').emit('values:created', {
     rowId,
     row: rowData,
@@ -771,6 +772,7 @@ async function buildRow(rowId) {
 
   const row = {
     rowId,
+
     createdAt: null,
     updatedAt: null,
     createdUser: null,
@@ -789,6 +791,7 @@ async function buildRow(rowId) {
       row.updatedAt = v.updatedAt;
       row.updatedUser = v.updatedByUser;
     }
+    row['rowNum'] = v.rowNum;
   }
 
   for (const field of fields) {
