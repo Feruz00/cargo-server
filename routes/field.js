@@ -11,14 +11,12 @@ const { protect, restrictTo } = require('../middleware/auth');
 
 const router = require('express').Router();
 
-router.use(protect, restrictTo('admin'));
+router.use(protect);
 
-router
-  .route('/')
-  .get(getAllFields)
-  .post(createField)
-  .delete(deleteFields)
-  .put(updateFieldOrder);
+router.route('/').get(restrictTo('admin', 'head'), getAllFields);
+
+router.use(protect, restrictTo('admin'));
+router.route('/').post(createField).delete(deleteFields).put(updateFieldOrder);
 
 router.route('/:id').get(getOneField).patch(updateField).delete(deleteField);
 

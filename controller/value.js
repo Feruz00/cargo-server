@@ -507,7 +507,7 @@ exports.deleteMany = catchAsync(async (req, res) => {
   }
   const deletedCount = await CargoFieldValues.destroy({
     where: {
-      rowNum: { [Op.in]: ids },
+      rowId: { [Op.in]: ids },
     },
   });
   res.status(200).json({
@@ -555,6 +555,7 @@ exports.importExcel = catchAsync(async (req, res) => {
 
   for (let i = jsonData.length - 1; i >= 0; i--) {
     const row = jsonData[i];
+    const rowId = uuidv4();
 
     for (const key in row) {
       const field = fieldMap[key];
@@ -566,6 +567,7 @@ exports.importExcel = catchAsync(async (req, res) => {
         rowNum: currentRowNum,
         createdUser: req.user.id,
         updatedUser: req.user.id,
+        rowId,
       });
     }
     insertedRowNums.push(currentRowNum);

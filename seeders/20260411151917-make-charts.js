@@ -28,11 +28,11 @@ module.exports = {
         type: 'bar',
         description: 'Priority boýunça jemi baha',
       },
-      {
-        name: 'Ýurt boýunça ýük sany',
-        type: 'bar',
-        description: 'Gelýän ýer boýunça statistika',
-      },
+      // {
+      //   name: 'Ýurt boýunça ýük sany',
+      //   type: 'bar',
+      //   description: 'Gelýän ýer boýunça statistika',
+      // },
     ];
 
     await queryInterface.bulkInsert(
