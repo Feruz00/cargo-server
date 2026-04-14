@@ -90,7 +90,7 @@ module.exports = {
       const allowedFieldIds = userFieldsMap[user.id] || [];
       if (!allowedFieldIds.length) continue;
 
-      const totalRows = randNum(50, 100);
+      const totalRows = randNum(20, 30);
 
       for (let i = 0; i < totalRows; i++) {
         const rowId = uuidv4(); // ✅ UNIQUE ROW ID
